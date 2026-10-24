@@ -1,0 +1,62 @@
+:root {
+    color-scheme: light;
+    --color-brand-navy: #273783;
+    --color-brand-blue: #2385c4;
+    --color-brand-cyan: #29a8d7;
+    --color-brand-sky: #c8d8ed;
+    --color-brand-pale: #e9f5fa;
+    --color-ink: #142c46;
+    --color-text-muted: #728194;
+    --color-border: #e1eaf0;
+    --color-surface: #ffffff;
+    --color-page: #f4f8fb;
+    --font-body: 'DM Sans', 'Segoe UI', sans-serif;
+    --font-display: 'Manrope', 'Segoe UI', sans-serif;
+
+    font-family: var(--font-body);
+    color: var(--color-ink);
+    background: var(--color-page);
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html {
+    min-width: 320px;
+    min-height: 100%;
+}
+
+body {
+    min-width: 320px;
+    min-height: 100vh;
+    margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+    font: inherit;
+}
+
+img,
+svg {
+    display: block;
+    max-width: 100%;
+}
+
+a {
+    color: inherit;
+}
+
+::selection {
+    color: var(--color-surface);
+    background: var(--color-brand-blue);
+}
