@@ -135,10 +135,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <label class="form-label" for="email">Email address</label>
                             <input class="form-control" id="email" name="email" type="email" autocomplete="email" maxlength="190" value="<?= htmlspecialchars($email, ENT_QUOTES, 'UTF-8') ?>" required>
                         </div>
+                        
                         <div class="mb-3">
                             <label class="form-label" for="phone">Phone number <span class="text-body-secondary">(optional)</span></label>
-                            <input class="form-control" id="phone" name="phone" type="tel" autocomplete="tel" maxlength="11" value="<?= htmlspecialchars($phone, ENT_QUOTES, 'UTF-8') ?>">
+                            <input class="form-control" id="phone" name="phone" type="tel" autocomplete="tel" maxlength="11" oninput="removeLetters()" onblur="checkPhoneLength()" value="<?= htmlspecialchars($phone, ENT_QUOTES, 'UTF-8') ?>">
+                            <div id="phone-error" class="alert alert-danger" style="display: none; margin-top: 8px; padding: 10px; font-size: 14px; background-color: #f8d7da; color: #721c24; border-radius: 8px; border: 1px solid #f5c6cb;">
+                            </div>
                         </div>
+
                         <div class="mb-3">
                             <label class="form-label" for="password">Password</label>
                             <div class="password-field">
@@ -170,5 +174,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </section>
         </div>
     </main>
+
+    <script>
+    // Tinatanggal ang letters habang nagta-type, pero walang error na lalabas
+    function removeLetters() {
+        let phoneInput = document.getElementById('phone');
+        phoneInput.value = phoneInput.value.replace(/[^0-9]/g, '');
+        
+        // Itago agad ang error kapag naging saktong 11 digits na at nagsisimula sa 09 habang nagta-type
+        if (phoneInput.value.length === 11 && phoneInput.value.startsWith('09')) {
+            document.getElementById('phone-error').style.display = 'none';
+        }
+    }
+
+    // Lalabas lang ang error kapag umalis na siya sa textbox (onblur)
+    function checkPhoneLength() {
+        let phoneInput = document.getElementById('phone');
+        let errorDiv = document.getElementById('phone-error');
+        let val = phoneInput.value;
+        
+        // I-check kung may tinype ang user
+        if (val.length > 0) {
+            if (val.length < 11) {
+                // Kung kulang sa 11 digits
+                errorDiv.style.display = 'block';
+                errorDiv.innerHTML = 'Invalid: Please Enter 11 Digits of Number';
+            } else if (!val.startsWith('09')) {
+                // Kung 11 digits nga pero hindi nagsisimula sa 09
+                errorDiv.style.display = 'block';
+                errorDiv.innerHTML = 'Invalid: Enter existing number';
+            } else {
+                // Tama ang format
+                errorDiv.style.display = 'none';
+            }
+        } else {
+            // Itago ang error kapag blangko (optional kasi ang phone number)
+            errorDiv.style.display = 'none';
+        }
+    }
+    </script>
 </body>
 </html>

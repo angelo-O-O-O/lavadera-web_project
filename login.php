@@ -44,7 +44,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['full_name'] = $fullName;
                 $_SESSION['email'] = $accountEmail;
                 $_SESSION['role'] = $role;
-                header('Location: pages/home.php');
+
+                // Saluhin kung Admin o Customer
+                if ($role === 'admin') {
+                    header('Location: admin/dashboard.php');
+                } else {
+                    header('Location: pages/home.php');
+                }
                 exit;
             }
         } catch (mysqli_sql_exception $exception) {
@@ -88,7 +94,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <section class="col-12 col-md-7 auth-form-panel" aria-labelledby="form-title">
                 <div class="auth-form-wrap">
                     <header class="form-heading mb-4">
-                        <!-- <span class="auth-eyebrow">It's good to see you</span> -->
                         <h2 id="form-title" class="h2 auth-title mb-2">Welcome back</h2>
                         <p class="auth-description mb-0">Sign in to manage your laundry, your way.</p>
                     </header>
