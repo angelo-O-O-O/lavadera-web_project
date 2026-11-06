@@ -56,8 +56,8 @@ try {
         $activeCustomers = $custQuery->fetch_assoc()['total'] ?? 0;
     }
 
-    // Filtered Revenue based on dropdown selection
-    $revQuery = $conn->query("SELECT SUM(total_price) AS total FROM laundry_orders WHERE order_status != 'Cancelled' $dateCondition");
+    // Filtered Revenue based on dropdown selection (Pinatibay gamit ang LOWER para laging mabasa kahit anong capitalization)
+    $revQuery = $conn->query("SELECT SUM(total_price) AS total FROM laundry_orders WHERE LOWER(order_status) != 'cancelled' $dateCondition");
     if ($revQuery) {
         $filteredRevenue = $revQuery->fetch_assoc()['total'] ?? 0.00;
     }
@@ -70,7 +70,7 @@ try {
         $graphQ = $conn->query("
             SELECT HOUR(created_at) as timeframe, SUM(total_price) as sales
             FROM laundry_orders 
-            WHERE order_status != 'Cancelled' AND DATE(created_at) = CURDATE()
+            WHERE LOWER(order_status) != 'cancelled' AND DATE(created_at) = CURDATE()
             GROUP BY HOUR(created_at)
         ");
         while($row = $graphQ->fetch_assoc()) {
@@ -90,7 +90,7 @@ try {
         $graphQ = $conn->query("
             SELECT DAYNAME(created_at) as timeframe, SUM(total_price) as sales
             FROM laundry_orders 
-            WHERE order_status != 'Cancelled' AND YEARWEEK(created_at, 1) = YEARWEEK(CURDATE(), 1)
+            WHERE LOWER(order_status) != 'cancelled' AND YEARWEEK(created_at, 1) = YEARWEEK(CURDATE(), 1)
             GROUP BY DAYNAME(created_at)
         ");
         $dayMap = ['Monday' => 0, 'Tuesday' => 1, 'Wednesday' => 2, 'Thursday' => 3, 'Friday' => 4, 'Saturday' => 5, 'Sunday' => 6];
@@ -108,7 +108,7 @@ try {
         $graphQ = $conn->query("
             SELECT CEIL(DAYOFMONTH(created_at) / 7) as week_num, SUM(total_price) as sales
             FROM laundry_orders 
-            WHERE order_status != 'Cancelled' AND MONTH(created_at) = MONTH(CURDATE()) AND YEAR(created_at) = YEAR(CURDATE())
+            WHERE LOWER(order_status) != 'cancelled' AND MONTH(created_at) = MONTH(CURDATE()) AND YEAR(created_at) = YEAR(CURDATE())
             GROUP BY week_num
         ");
         while($row = $graphQ->fetch_assoc()) {
@@ -127,7 +127,7 @@ try {
         $graphQ = $conn->query("
             SELECT MONTH(created_at) as m_num, SUM(total_price) as sales
             FROM laundry_orders 
-            WHERE order_status != 'Cancelled' AND YEAR(created_at) = YEAR(CURDATE())
+            WHERE LOWER(order_status) != 'cancelled' AND YEAR(created_at) = YEAR(CURDATE())
             GROUP BY MONTH(created_at)
         ");
         while($row = $graphQ->fetch_assoc()) {
