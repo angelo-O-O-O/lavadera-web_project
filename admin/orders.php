@@ -9,58 +9,110 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
 
 require __DIR__ . '/../config/dbcon.php';
 
+$successMsg = "";
+$errorMsg = "";
 $adminName = $_SESSION['full_name'] ?? 'Administrator';
 
-// Handle Actions (Update Status or Cancel with Reason)
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $actionType = $_POST['action_type'] ?? '';
-    $orderId = intval($_POST['order_id'] ?? 0);
+// Handle Confirm Order
+if (isset($_GET['action']) && $_GET['action'] === 'confirm') {
+    $orderId = intval($_GET['id']);
+    $stmt = $conn->prepare("UPDATE laundry_orders SET order_status = 'Confirmed' WHERE order_id = ?");
+    $stmt->bind_param("i", $orderId);
+    if ($stmt->execute()) {
+        $successMsg = "Order confirmed successfully!";
+    } else {
+        $errorMsg = "Failed to confirm order.";
+    }
+}
 
-    try {
-        if ($actionType === 'update_status') {
-            $newStatus = $_POST['order_status'];
-            $stmt = $conn->prepare("UPDATE laundry_orders SET order_status = ? WHERE order_id = ?");
-            $stmt->bind_param("si", $newStatus, $orderId);
-            $stmt->execute();
-            $_SESSION['success_msg'] = "Order status successfully updated to {$newStatus}!";
-        } 
-        elseif ($actionType === 'cancel_order') {
-            $reason = trim($_POST['cancel_reason'] ?? 'Declined by admin');
-            $stmt = $conn->prepare("UPDATE laundry_orders SET order_status = 'Cancelled', cancel_reason = ? WHERE order_id = ?");
-            $stmt->bind_param("si", $reason, $orderId);
-            $stmt->execute();
-            $_SESSION['success_msg'] = "Order has been declined/cancelled.";
+// Handle Status Update
+if (isset($_POST['update_status'])) {
+    $orderId = intval($_POST['order_id']);
+    $newStatus = trim($_POST['order_status']);
+
+    if ($newStatus === 'Completed' || $newStatus === 'Delivered' || $newStatus === 'Pending') {
+        $stmt = $conn->prepare("UPDATE laundry_orders SET order_status = ?, machine_assigned = NULL WHERE order_id = ?");
+    } else {
+        $stmt = $conn->prepare("UPDATE laundry_orders SET order_status = ? WHERE order_id = ?");
+    }
+    
+    $stmt->bind_param("si", $newStatus, $orderId);
+    if ($stmt->execute()) {
+        $successMsg = "Order status updated successfully!";
+    } else {
+        $errorMsg = "Failed to update order status.";
+    }
+}
+
+// Handle Decline / Cancel Order
+if (isset($_GET['action']) && $_GET['action'] === 'decline') {
+    $orderId = intval($_GET['id']);
+
+    $ordStmt = $conn->prepare("SELECT total_price, order_status FROM laundry_orders WHERE order_id = ?");
+    $ordStmt->bind_param("i", $orderId);
+    $ordStmt->execute();
+    $orderData = $ordStmt->get_result()->fetch_assoc();
+
+    if ($orderData) {
+        $oldStatus = $orderData['order_status'];
+
+        $updateStmt = $conn->prepare("UPDATE laundry_orders SET order_status = 'Cancelled', machine_assigned = NULL WHERE order_id = ?");
+        $updateStmt->bind_param("i", $orderId);
+        
+        if ($updateStmt->execute()) {
+            if ($oldStatus === 'Completed' || $oldStatus === 'Delivered') {
+                $revStmt = $conn->prepare("UPDATE payments SET status = 'Cancelled' WHERE order_id = ?");
+                $revStmt->bind_param("i", $orderId);
+                $revStmt->execute();
+            }
+            $successMsg = "Order successfully cancelled.";
+        } else {
+            $errorMsg = "Failed to cancel order.";
         }
-
-        header("Location: orders.php");
-        exit();
-
-    } catch (Exception $e) {
-        $_SESSION['error_msg'] = "Action failed: " . $e->getMessage();
-        header("Location: orders.php");
-        exit();
     }
 }
 
-// Fetch all orders securely
-$orders = [];
-$errorMsg = $_SESSION['error_msg'] ?? '';
-unset($_SESSION['error_msg']);
+// Handle Machine Assignment
+if (isset($_POST['assign_machine'])) {
+    $orderId = intval($_POST['order_id']);
+    $machineName = trim($_POST['machine_name']);
 
-try {
-    $ordersQuery = $conn->query("
-        SELECT o.*, u.full_name, u.email, u.phone, u.address, s.service_name, s.pricing_unit
-        FROM laundry_orders o 
-        LEFT JOIN users u ON o.user_id = u.user_id 
-        LEFT JOIN services s ON o.service_id = s.service_id 
-        ORDER BY o.created_at DESC
-    ");
-    if ($ordersQuery) {
-        $orders = $ordersQuery->fetch_all(MYSQLI_ASSOC);
+    $statusToSet = (stripos($machineName, 'dryer') !== false) ? 'Drying' : 'Washing';
+
+    $stmt = $conn->prepare("UPDATE laundry_orders SET machine_assigned = ?, order_status = ? WHERE order_id = ?");
+    $stmt->bind_param("ssi", $machineName, $statusToSet, $orderId);
+    if ($stmt->execute()) {
+        $successMsg = "Successfully assigned to " . htmlspecialchars($machineName) . "!";
+    } else {
+        $errorMsg = "Failed to assign machine.";
     }
-} catch (Exception $e) {
-    $errorMsg = "Database error: " . $e->getMessage();
 }
+
+// Fetch active washing machines / dryers
+$machinesList = [];
+$machQuery = $conn->query("SELECT * FROM washing_machines");
+if ($machQuery) {
+    $machinesList = $machQuery->fetch_all(MYSQLI_ASSOC);
+}
+
+// Fetch busy machines
+$busyMachines = [];
+$busyQuery = $conn->query("SELECT machine_assigned FROM laundry_orders WHERE machine_assigned IS NOT NULL AND order_status NOT IN ('Completed', 'Delivered', 'Cancelled')");
+if ($busyQuery) {
+    while ($row = $busyQuery->fetch_assoc()) {
+        $busyMachines[] = $row['machine_assigned'];
+    }
+}
+
+// Fetch all orders
+$ordersQuery = $conn->query("
+    SELECT o.*, u.full_name, u.phone, s.service_name 
+    FROM laundry_orders o 
+    JOIN users u ON o.user_id = u.user_id 
+    JOIN services s ON o.service_id = s.service_id 
+    ORDER BY o.created_at DESC
+");
+$orders = $ordersQuery ? $ordersQuery->fetch_all(MYSQLI_ASSOC) : [];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -68,20 +120,10 @@ try {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Manage Orders | SmartSpin Admin</title>
-    
     <link rel="stylesheet" href="../assets/css/bootstrap.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.2/font/bootstrap-icons.min.css">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="../assets/css/admin.css">
-    <style>
-        .status-badge { padding: 6px 12px; border-radius: 50px; font-weight: 600; font-size: 0.75rem; display: inline-block; }
-        .status-Pending { background-color: #fff3cd; color: #856404; }
-        .status-Confirmed, .status-Washing, .status-Drying, .status-Folding, .status-ReadyforPickup { background-color: #cce5ff; color: #004085; }
-        .status-Completed { background-color: #d4edda; color: #155724; }
-        .status-Cancelled { background-color: #f8d7da; color: #721c24; }
-    </style>
 </head>
 <body>
 
@@ -96,7 +138,7 @@ try {
 
     <div class="admin-wrapper">
         
-        <!-- Sidebar Navigation -->
+        <!-- Sidebar Navigation (Complete with all menu items) -->
         <nav class="sidebar" id="sidebarNav">
             <a href="dashboard.php" class="sidebar-brand">
                 <i class="bi bi-droplet-half fs-4 text-primary"></i> <span>SmartSpin Admin</span>
@@ -130,200 +172,189 @@ try {
 
         <!-- Main Content Area -->
         <main class="main-content">
-            
-            <!-- Page Header -->
-            <div class="page-header">
-                <div>
-                    <h3 class="fw-bold text-dark mb-1">Laundry Orders Management</h3>
-                    <p class="text-muted small mb-0">Accept or decline customer orders and monitor progress.</p>
-                </div>
+            <div class="mb-4">
+                <h3 class="fw-bold text-dark mb-1">Laundry Orders Management</h3>
+                <p class="text-muted small mb-0">Accept customer orders, assign machines, and monitor progress.</p>
             </div>
 
-            <!-- Flash Messages -->
-            <?php if(isset($_SESSION['success_msg'])): ?>
-                <div class="alert alert-success alert-dismissible fade show rounded-4 border-0 mb-4" role="alert">
-                    <i class="bi bi-check-circle-fill me-2"></i><?= $_SESSION['success_msg']; unset($_SESSION['success_msg']); ?>
-                    <button type="button" class="btn-close shadow-none" data-bs-dismiss="alert" aria-label="Close"></button>
+            <?php if (!empty($successMsg)): ?>
+                <div class="alert alert-success alert-dismissible fade show py-2 small" role="alert">
+                    <?= htmlspecialchars($successMsg) ?>
+                    <button type="button" class="btn-close btn-sm shadow-none" data-bs-dismiss="alert" aria-label="Close"></button>
                 </div>
             <?php endif; ?>
 
-            <?php if(!empty($errorMsg)): ?>
-                <div class="alert alert-danger alert-dismissible fade show rounded-4 border-0 mb-4" role="alert">
-                    <i class="bi bi-exclamation-triangle-fill me-2"></i><?= htmlspecialchars($errorMsg) ?>
-                    <button type="button" class="btn-close shadow-none" data-bs-dismiss="alert" aria-label="Close"></button>
+            <?php if (!empty($errorMsg)): ?>
+                <div class="alert alert-danger alert-dismissible fade show py-2 small" role="alert">
+                    <?= htmlspecialchars($errorMsg) ?>
+                    <button type="button" class="btn-close btn-sm shadow-none" data-bs-dismiss="alert" aria-label="Close"></button>
                 </div>
             <?php endif; ?>
 
-            <!-- Orders Table Card Container -->
             <div class="card p-0 overflow-hidden">
-                <div class="table-container">
-                    <table class="table mb-0">
+                <div class="table-responsive">
+                    <table class="table align-middle mb-0">
                         <thead>
-                            <tr>
-                                <th scope="col">Tracking No</th>
-                                <th scope="col">Customer</th>
-                                <th scope="col">Service & Weight</th>
-                                <th scope="col">Total</th>
-                                <th scope="col">Status</th>
-                                <th scope="col" class="text-end">Actions</th>
+                            <tr class="text-muted small text-uppercase border-bottom">
+                                <th class="py-3 px-4">Tracking No</th>
+                                <th class="py-3">Customer</th>
+                                <th class="py-3">Service & Weight</th>
+                                <th class="py-3">Assigned Machine</th>
+                                <th class="py-3">Total</th>
+                                <th class="py-3">Status</th>
+                                <th class="py-3 text-end px-4">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <?php if(empty($orders)): ?>
-                                <tr>
-                                    <td colspan="6" class="text-center py-5 text-muted">
-                                        <div class="bg-light text-muted rounded-circle d-inline-flex align-items-center justify-content-center mb-3" style="width: 70px; height: 70px; font-size: 2rem;">
-                                            <i class="bi bi-basket"></i>
-                                        </div>
-                                        <h5 class="fw-bold text-dark">No laundry orders found</h5>
-                                        <p class="text-muted small mb-0">Orders placed by customers will appear here.</p>
-                                    </td>
-                                </tr>
-                            <?php else: ?>
-                                <?php foreach($orders as $order): 
-                                    $statusClass = 'status-' . str_replace(' ', '', $order['order_status']);
-                                ?>
-                                <tr>
-                                    <td><strong class="text-primary"><?= htmlspecialchars($order['tracking_no']) ?></strong></td>
-                                    <td>
-                                        <div class="fw-bold text-dark"><?= htmlspecialchars($order['full_name'] ?? 'Walk-in / Unknown') ?></div>
-                                        <small class="text-muted"><?= htmlspecialchars($order['phone'] ?? 'No contact') ?></small>
-                                    </td>
-                                    <td>
-                                        <div class="fw-semibold text-dark"><?= htmlspecialchars($order['service_name'] ?? 'General Laundry') ?></div>
-                                        <small class="text-muted"><?= $order['weight_load'] ?> kg</small>
-                                    </td>
-                                    <td class="fw-bold text-dark">₱<?= number_format($order['total_price'], 2) ?></td>
-                                    <td><span class="status-badge <?= $statusClass ?>"><?= $order['order_status'] ?></span></td>
-                                    <td class="text-end">
-                                        <div class="d-flex align-items-center justify-content-end gap-2">
-                                            <?php if($order['order_status'] === 'Pending'): ?>
-                                                <!-- Accept Button -->
-                                                <form action="orders.php" method="POST" class="d-inline">
-                                                    <input type="hidden" name="order_id" value="<?= $order['order_id'] ?>">
-                                                    <input type="hidden" name="action_type" value="update_status">
-                                                    <input type="hidden" name="order_status" value="Confirmed">
-                                                    <button type="submit" class="btn btn-sm btn-success rounded-pill px-3 shadow-none fw-semibold">
-                                                        <i class="bi bi-check-lg me-1"></i> Accept
-                                                    </button>
-                                                </form>
-
-                                                <!-- Decline Button -->
-                                                <button type="button" class="btn btn-sm btn-outline-danger rounded-pill px-3 shadow-none fw-semibold" data-bs-toggle="modal" data-bs-target="#declineModal<?= $order['order_id'] ?>">
-                                                    <i class="bi bi-x-lg me-1"></i> Decline
-                                                </button>
+                            <?php if (count($orders) > 0): ?>
+                                <?php foreach ($orders as $ord): ?>
+                                    <tr>
+                                        <td class="px-4 fw-bold text-primary">#<?= htmlspecialchars($ord['tracking_no']) ?></td>
+                                        <td>
+                                            <div class="fw-semibold text-dark"><?= htmlspecialchars($ord['full_name']) ?></div>
+                                            <div class="text-muted small"><?= htmlspecialchars($ord['phone']) ?></div>
+                                        </td>
+                                        <td>
+                                            <div class="fw-medium text-dark"><?= htmlspecialchars($ord['service_name']) ?></div>
+                                            <div class="text-muted small"><?= number_format($ord['weight'] ?? 1.0, 2) ?> kg</div>
+                                        </td>
+                                        <td>
+                                            <?php 
+                                                $st = $ord['order_status'];
+                                            ?>
+                                            <?php if (!empty($ord['machine_assigned']) && $st !== 'Completed' && $st !== 'Delivered' && $st !== 'Pending'): ?>
+                                                <span class="badge bg-light text-dark border px-2 py-1">
+                                                    <?= htmlspecialchars($ord['machine_assigned']) ?>
+                                                </span>
                                             <?php else: ?>
-                                                <!-- Update Status for Active/Completed Orders -->
-                                                <button type="button" class="btn btn-sm btn-outline-primary rounded-pill px-3 shadow-none fw-semibold" data-bs-toggle="modal" data-bs-target="#statusModal<?= $order['order_id'] ?>">
-                                                    <i class="bi bi-arrow-repeat me-1"></i> Update Status
-                                                </button>
+                                                <span class="text-muted small">Not assigned</span>
                                             <?php endif; ?>
-
-                                            <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-3 shadow-none" data-bs-toggle="modal" data-bs-target="#detailsModal<?= $order['order_id'] ?>">
-                                                <i class="bi bi-eye"></i>
-                                            </button>
-                                        </div>
-                                    </td>
-                                </tr>
-
-                                <!-- 1. VIEW DETAILS MODAL -->
-                                <div class="modal fade" id="detailsModal<?= $order['order_id'] ?>" tabindex="-1" aria-hidden="true">
-                                    <div class="modal-dialog modal-dialog-centered">
-                                        <div class="modal-content border-0 rounded-4 shadow-lg p-4">
-                                            <div class="modal-header border-0 pb-0">
-                                                <h5 class="modal-title fw-bold">Order Details: <?= htmlspecialchars($order['tracking_no']) ?></h5>
-                                                <button type="button" class="btn-close shadow-none" data-bs-dismiss="modal" aria-label="Close"></button>
-                                            </div>
-                                            <div class="modal-body pt-3 text-start">
-                                                <p class="mb-2"><strong>Customer:</strong> <?= htmlspecialchars($order['full_name'] ?? 'Unknown') ?></p>
-                                                <p class="mb-2"><strong>Contact:</strong> <?= htmlspecialchars($order['phone'] ?? 'N/A') ?> | <?= htmlspecialchars($order['email'] ?? 'N/A') ?></p>
-                                                <p class="mb-2"><strong>Address:</strong> <?= htmlspecialchars($order['address'] ?? 'Not specified') ?></p>
-                                                <hr>
-                                                <p class="mb-2"><strong>Service:</strong> <?= htmlspecialchars($order['service_name'] ?? 'N/A') ?></p>
-                                                <p class="mb-2"><strong>Weight/Load:</strong> <?= $order['weight_load'] ?> kg</p>
-                                                <p class="mb-2"><strong>Total Amount:</strong> ₱<?= number_format($order['total_price'], 2) ?></p>
-                                                <p class="mb-2"><strong>Payment Status:</strong> <span class="badge bg-secondary"><?= htmlspecialchars($order['payment_status']) ?></span></p>
-                                                <p class="mb-2"><strong>Order Date:</strong> <?= date('M d, Y h:i A', strtotime($order['created_at'])) ?></p>
-                                                <?php if($order['order_status'] === 'Cancelled' && !empty($order['cancel_reason'])): ?>
-                                                    <div class="alert alert-danger mt-3 mb-0 small">
-                                                        <strong>Reason:</strong> <?= htmlspecialchars($order['cancel_reason']) ?>
-                                                    </div>
+                                        </td>
+                                        <td class="fw-bold text-dark">₱<?= number_format($ord['total_price'], 2) ?></td>
+                                        <td>
+                                            <span class="badge bg-light text-dark border px-2 py-1">
+                                                <?= htmlspecialchars($st) ?>
+                                            </span>
+                                        </td>
+                                        <td class="text-end px-4">
+                                            <div class="d-flex justify-content-end gap-2 align-items-center">
+                                                <?php if ($st === 'Completed' || $st === 'Delivered'): ?>
+                                                    <span class="text-muted small">Finalized / Completed</span>
+                                                <?php elseif ($st === 'Pending'): ?>
+                                                    <a href="orders.php?action=confirm&id=<?= $ord['order_id'] ?>" class="btn btn-success btn-sm px-3">Confirm</a>
+                                                    <button type="button" class="btn btn-outline-danger btn-sm px-3" data-bs-toggle="modal" data-bs-target="#declineModal<?= $ord['order_id'] ?>">Decline</button>
+                                                <?php else: ?>
+                                                    <button type="button" class="btn btn-outline-primary btn-sm px-3" data-bs-toggle="modal" data-bs-target="#assignModal<?= $ord['order_id'] ?>">Assign Machine</button>
+                                                    <button type="button" class="btn btn-outline-secondary btn-sm px-3" data-bs-toggle="modal" data-bs-target="#statusModal<?= $ord['order_id'] ?>">Edit Status</button>
                                                 <?php endif; ?>
                                             </div>
-                                        </div>
-                                    </div>
-                                </div>
 
-                                <!-- 2. UPDATE STATUS MODAL -->
-                                <div class="modal fade" id="statusModal<?= $order['order_id'] ?>" tabindex="-1" aria-hidden="true">
-                                    <div class="modal-dialog modal-dialog-centered">
-                                        <div class="modal-content border-0 rounded-4 shadow-lg p-4">
-                                            <div class="modal-header border-0 pb-0">
-                                                <h5 class="modal-title fw-bold">Update Status: <?= htmlspecialchars($order['tracking_no']) ?></h5>
-                                                <button type="button" class="btn-close shadow-none" data-bs-dismiss="modal" aria-label="Close"></button>
-                                            </div>
-                                            <div class="modal-body pt-3 text-start">
-                                                <form action="orders.php" method="POST">
-                                                    <input type="hidden" name="order_id" value="<?= $order['order_id'] ?>">
-                                                    <input type="hidden" name="action_type" value="update_status">
-                                                    
-                                                    <div class="mb-3">
-                                                        <label class="form-label text-muted small fw-bold">NEW ORDER STATUS</label>
-                                                        <select class="form-select rounded-3 p-3 shadow-none" name="order_status" required>
-                                                            <?php 
-                                                            $statuses = ['Pending', 'Confirmed', 'Washing', 'Drying', 'Folding', 'Ready for Pickup', 'Completed'];
-                                                            foreach($statuses as $st) {
-                                                                $selected = ($order['order_status'] === $st) ? 'selected' : '';
-                                                                echo "<option value=\"$st\" $selected>$st</option>";
-                                                            }
-                                                            ?>
-                                                        </select>
+                                            <!-- Standard Decline Modal -->
+                                            <?php if ($st === 'Pending'): ?>
+                                                <div class="modal fade text-start" id="declineModal<?= $ord['order_id'] ?>" tabindex="-1" aria-hidden="true">
+                                                    <div class="modal-dialog modal-dialog-centered">
+                                                        <div class="modal-content">
+                                                            <div class="modal-header">
+                                                                <h5 class="modal-title fs-6 fw-bold">Cancel Order</h5>
+                                                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                                            </div>
+                                                            <div class="modal-body">
+                                                                Are you sure you want to cancel order #<?= htmlspecialchars($ord['tracking_no']) ?>?
+                                                            </div>
+                                                            <div class="modal-footer">
+                                                                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+                                                                <a href="orders.php?action=decline&id=<?= $ord['order_id'] ?>" class="btn btn-danger btn-sm">Cancel Order</a>
+                                                            </div>
+                                                        </div>
                                                     </div>
-                                                    <button type="submit" class="btn btn-primary w-100 py-2.5 rounded-3 fw-semibold" style="background-color: var(--primary-navy);">
-                                                        Save New Status
-                                                    </button>
-                                                </form>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
+                                                </div>
+                                            <?php endif; ?>
 
-                                <!-- 3. DECLINE ORDER MODAL -->
-                                <div class="modal fade" id="declineModal<?= $order['order_id'] ?>" tabindex="-1" aria-hidden="true">
-                                    <div class="modal-dialog modal-dialog-centered">
-                                        <div class="modal-content border-0 rounded-4 shadow-lg p-4">
-                                            <div class="modal-header border-0 pb-0">
-                                                <h5 class="modal-title fw-bold text-danger">Decline Order: <?= htmlspecialchars($order['tracking_no']) ?></h5>
-                                                <button type="button" class="btn-close shadow-none" data-bs-dismiss="modal" aria-label="Close"></button>
-                                            </div>
-                                            <div class="modal-body pt-3 text-start">
-                                                <form action="orders.php" method="POST">
-                                                    <input type="hidden" name="order_id" value="<?= $order['order_id'] ?>">
-                                                    <input type="hidden" name="action_type" value="cancel_order">
-                                                    
-                                                    <div class="mb-3">
-                                                        <label class="form-label text-muted small fw-bold">REASON FOR DECLINING</label>
-                                                        <textarea class="form-control rounded-3 p-3 shadow-none" name="cancel_reason" rows="3" placeholder="Enter reason (e.g. Fully booked, shop closed)..." required></textarea>
+                                            <!-- Standard Machine Assignment Modal -->
+                                            <?php if ($st !== 'Pending' && $st !== 'Completed' && $st !== 'Delivered'): ?>
+                                                <div class="modal fade text-start" id="assignModal<?= $ord['order_id'] ?>" tabindex="-1" aria-hidden="true">
+                                                    <div class="modal-dialog modal-dialog-centered">
+                                                        <div class="modal-content">
+                                                            <form method="POST" action="orders.php">
+                                                                <div class="modal-header">
+                                                                    <h5 class="modal-title fs-6 fw-bold">Assign Machine for #<?= htmlspecialchars($ord['tracking_no']) ?></h5>
+                                                                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                                                </div>
+                                                                <div class="modal-body">
+                                                                    <input type="hidden" name="order_id" value="<?= $ord['order_id'] ?>">
+                                                                    <div class="mb-3">
+                                                                        <label for="machine_name" class="form-label small">Select Machine / Dryer</label>
+                                                                        <select class="form-select form-select-sm" name="machine_name" required>
+                                                                            <option value="" disabled selected>Choose machine...</option>
+                                                                            <?php foreach ($machinesList as $mach): ?>
+                                                                                <?php 
+                                                                                    $mName = $mach['machine_name'];
+                                                                                    $isBusy = in_array($mName, $busyMachines);
+                                                                                ?>
+                                                                                <option value="<?= htmlspecialchars($mName) ?>" <?= $isBusy ? 'disabled' : '' ?>>
+                                                                                    <?= htmlspecialchars($mName) ?> (<?= htmlspecialchars($mach['machine_type'] ?? 'Machine') ?>) <?= $isBusy ? ' - [IN USE]' : '' ?>
+                                                                                </option>
+                                                                            <?php endforeach; ?>
+                                                                        </select>
+                                                                    </div>
+                                                                </div>
+                                                                <div class="modal-footer">
+                                                                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+                                                                    <button type="submit" name="assign_machine" class="btn btn-primary btn-sm">Save</button>
+                                                                </div>
+                                                            </form>
+                                                        </div>
                                                     </div>
-                                                    <button type="submit" class="btn btn-danger w-100 py-2.5 rounded-3 fw-semibold">
-                                                        Confirm Decline
-                                                    </button>
-                                                </form>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
+                                                </div>
+                                            <?php endif; ?>
 
+                                            <!-- Standard Status Update Modal -->
+                                            <div class="modal fade text-start" id="statusModal<?= $ord['order_id'] ?>" tabindex="-1" aria-hidden="true">
+                                                <div class="modal-dialog modal-dialog-centered">
+                                                    <div class="modal-content">
+                                                        <form method="POST" action="orders.php">
+                                                            <div class="modal-header">
+                                                                <h5 class="modal-title fs-6 fw-bold">Update Status for #<?= htmlspecialchars($ord['tracking_no']) ?></h5>
+                                                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                                            </div>
+                                                            <div class="modal-body">
+                                                                <input type="hidden" name="order_id" value="<?= $ord['order_id'] ?>">
+                                                                <div class="mb-3">
+                                                                    <label for="order_status" class="form-label small">New Status</label>
+                                                                    <select class="form-select form-select-sm" name="order_status" required>
+                                                                        <option value="Pending" <?= ($st === 'Pending') ? 'selected' : '' ?>>Pending</option>
+                                                                        <option value="Confirmed" <?= ($st === 'Confirmed') ? 'selected' : '' ?>>Confirmed</option>
+                                                                        <option value="Washing" <?= ($st === 'Washing') ? 'selected' : '' ?>>Washing</option>
+                                                                        <option value="Drying" <?= ($st === 'Drying') ? 'selected' : '' ?>>Drying</option>
+                                                                        <option value="Ready for Pickup" <?= ($st === 'Ready for Pickup') ? 'selected' : '' ?>>Ready for Pickup</option>
+                                                                        <option value="Completed" <?= ($st === 'Completed') ? 'selected' : '' ?>>Completed</option>
+                                                                    </select>
+                                                                </div>
+                                                            </div>
+                                                            <div class="modal-footer">
+                                                                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+                                                                <button type="submit" name="update_status" class="btn btn-primary btn-sm">Update</button>
+                                                            </div>
+                                                        </form>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
                                 <?php endforeach; ?>
+                            <?php else: ?>
+                                <tr>
+                                    <td colspan="7" class="text-center text-muted py-4">No laundry orders found.</td>
+                                </tr>
                             <?php endif; ?>
                         </tbody>
                     </table>
                 </div>
             </div>
-
         </main>
     </div>
 
+    <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         document.addEventListener("DOMContentLoaded", function() {

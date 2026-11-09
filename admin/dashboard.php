@@ -14,7 +14,7 @@ $adminName = $_SESSION['full_name'] ?? 'Administrator';
 // Get Filter Option (default to 'monthly')
 $filter = $_GET['filter'] ?? 'monthly';
 
-// Date condition based on filter for revenue
+// Date condition based on filter
 $dateCondition = "";
 if ($filter === 'daily') {
     $dateCondition = "AND DATE(created_at) = CURDATE()";
@@ -26,129 +26,117 @@ if ($filter === 'daily') {
     $dateCondition = "AND YEAR(created_at) = YEAR(CURDATE())";
 }
 
-// Fetch Dashboard Metrics
-$totalOrders = 0;
-$pendingOrders = 0;
-$activeCustomers = 0;
-$filteredRevenue = 0.00;
-$recentOrders = [];
-
-// Chart Data Arrays
+// Metrics Variables
+$totalRevenue = 0.00;
+$totalOrdersCount = 0;
+$pendingOrdersCount = 0;
+$registeredCustomersCount = 0;
 $chartLabels = [];
 $chartData = [];
+$recentOrders = [];
 
 try {
-    // Total Orders count
-    $ordQuery = $conn->query("SELECT COUNT(*) as total FROM laundry_orders");
-    if ($ordQuery) {
-        $totalOrders = $ordQuery->fetch_assoc()['total'] ?? 0;
+    // 1. Revenue Count (Completed/Delivered)
+    $revQ = $conn->query("SELECT SUM(total_price) AS total FROM laundry_orders WHERE LOWER(order_status) IN ('completed', 'delivered', 'complete') $dateCondition");
+    if ($revQ) {
+        $totalRevenue = $revQ->fetch_assoc()['total'] ?? 0.00;
     }
 
-    // Pending Orders count
-    $pendQuery = $conn->query("SELECT COUNT(*) as total FROM laundry_orders WHERE order_status = 'Pending'");
-    if ($pendQuery) {
-        $pendingOrders = $pendQuery->fetch_assoc()['total'] ?? 0;
+    // 2. Total Orders Count
+    $ordQ = $conn->query("SELECT COUNT(*) AS total FROM laundry_orders WHERE 1=1 $dateCondition");
+    if ($ordQ) {
+        $totalOrdersCount = $ordQ->fetch_assoc()['total'] ?? 0;
     }
 
-    // Active Customers count
-    $custQuery = $conn->query("SELECT COUNT(*) as total FROM users WHERE role = 'customer'");
-    if ($custQuery) {
-        $activeCustomers = $custQuery->fetch_assoc()['total'] ?? 0;
+    // 3. Pending Orders Count
+    $pendQ = $conn->query("SELECT COUNT(*) AS total FROM laundry_orders WHERE LOWER(order_status) = 'pending' $dateCondition");
+    if ($pendQ) {
+        $pendingOrdersCount = $pendQ->fetch_assoc()['total'] ?? 0;
     }
 
-    // Filtered Revenue based on dropdown selection (Pinatibay gamit ang LOWER para laging mabasa kahit anong capitalization)
-    $revQuery = $conn->query("SELECT SUM(total_price) AS total FROM laundry_orders WHERE LOWER(order_status) != 'cancelled' $dateCondition");
-    if ($revQuery) {
-        $filteredRevenue = $revQuery->fetch_assoc()['total'] ?? 0.00;
+    // 4. Registered Customers Count
+    $custQ = $conn->query("SELECT COUNT(*) AS total FROM users WHERE role = 'customer'");
+    if ($custQ) {
+        $registeredCustomersCount = $custQ->fetch_assoc()['total'] ?? 0;
     }
 
-    // Dynamic Chart Data Query based on selected filter
+    // 5. Chart Data based on filter
     if ($filter === 'daily') {
-        $chartLabels = ['8 AM', '10 AM', '12 PM', '2 PM', '4 PM', '6 PM', '8 PM'];
-        $chartData = array_fill(0, count($chartLabels), 0);
-
-        $graphQ = $conn->query("
-            SELECT HOUR(created_at) as timeframe, SUM(total_price) as sales
-            FROM laundry_orders 
-            WHERE LOWER(order_status) != 'cancelled' AND DATE(created_at) = CURDATE()
-            GROUP BY HOUR(created_at)
-        ");
-        while($row = $graphQ->fetch_assoc()) {
-            $h = intval($row['timeframe']);
-            if ($h >= 8 && $h <= 20) {
-                $index = floor(($h - 8) / 2);
-                if (isset($chartData[$index])) {
-                    $chartData[$index] = floatval($row['sales']);
-                }
-            }
-        }
+        $chartLabels = ['Today'];
+        $chartData = [floatval($totalRevenue)];
     } elseif ($filter === 'weekly') {
-        $days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-        $chartLabels = $days;
-        $chartData = array_fill(0, count($days), 0);
-
         $graphQ = $conn->query("
             SELECT DAYNAME(created_at) as timeframe, SUM(total_price) as sales
             FROM laundry_orders 
-            WHERE LOWER(order_status) != 'cancelled' AND YEARWEEK(created_at, 1) = YEARWEEK(CURDATE(), 1)
-            GROUP BY DAYNAME(created_at)
+            WHERE LOWER(order_status) IN ('completed', 'delivered', 'complete') AND YEARWEEK(created_at, 1) = YEARWEEK(CURDATE(), 1)
+            GROUP BY DATE(created_at), DAYNAME(created_at)
+            ORDER BY created_at ASC
         ");
-        $dayMap = ['Monday' => 0, 'Tuesday' => 1, 'Wednesday' => 2, 'Thursday' => 3, 'Friday' => 4, 'Saturday' => 5, 'Sunday' => 6];
+        $tempData = [];
         while($row = $graphQ->fetch_assoc()) {
-            $dName = $row['timeframe'];
-            if (isset($dayMap[$dName])) {
-                $chartData[$dayMap[$dName]] = floatval($row['sales']);
-            }
+            $tempData[$row['timeframe']] = floatval($row['sales']);
         }
-    } elseif ($filter === 'monthly') {
-        // Accurate Monthly breakdown by weeks of the current month
-        $chartLabels = ['Week 1', 'Week 2', 'Week 3', 'Week 4'];
-        $chartData = array_fill(0, 4, 0);
-
-        $graphQ = $conn->query("
-            SELECT CEIL(DAYOFMONTH(created_at) / 7) as week_num, SUM(total_price) as sales
-            FROM laundry_orders 
-            WHERE LOWER(order_status) != 'cancelled' AND MONTH(created_at) = MONTH(CURDATE()) AND YEAR(created_at) = YEAR(CURDATE())
-            GROUP BY week_num
-        ");
-        while($row = $graphQ->fetch_assoc()) {
-            $wNum = intval($row['week_num']);
-            $idx = $wNum - 1;
-            if ($idx >= 3) { $idx = 3; } // Cap at Week 4 for standard monthly view
-            if (isset($chartData[$idx])) {
-                $chartData[$idx] = floatval($row['sales']);
-            }
+        $days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+        foreach($days as $day) {
+            $chartLabels[] = $day;
+            $chartData[] = $tempData[$day] ?? 0;
         }
     } elseif ($filter === 'yearly') {
-        $months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-        $chartLabels = $months;
-        $chartData = array_fill(0, count($months), 0);
-
         $graphQ = $conn->query("
-            SELECT MONTH(created_at) as m_num, SUM(total_price) as sales
+            SELECT MONTHNAME(created_at) as timeframe, SUM(total_price) as sales
             FROM laundry_orders 
-            WHERE LOWER(order_status) != 'cancelled' AND YEAR(created_at) = YEAR(CURDATE())
-            GROUP BY MONTH(created_at)
+            WHERE LOWER(order_status) IN ('completed', 'delivered', 'complete') AND YEAR(created_at) = YEAR(CURDATE())
+            GROUP BY MONTH(created_at), MONTHNAME(created_at)
+            ORDER BY MONTH(created_at) ASC
         ");
+        $months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+        $tempData = [];
         while($row = $graphQ->fetch_assoc()) {
-            $idx = intval($row['m_num']) - 1;
-            if (isset($chartData[$idx])) {
-                $chartData[$idx] = floatval($row['sales']);
-            }
+            $tempData[$row['timeframe']] = floatval($row['sales']);
+        }
+        foreach($months as $month) {
+            $chartLabels[] = substr($month, 0, 3);
+            $chartData[] = $tempData[$month] ?? 0;
+        }
+    } else {
+        // Monthly (Weeks 1-4)
+        $graphQ = $conn->query("
+            SELECT 
+                CASE 
+                    WHEN DAY(created_at) BETWEEN 1 AND 7 THEN 'Week 1'
+                    WHEN DAY(created_at) BETWEEN 8 AND 14 THEN 'Week 2'
+                    WHEN DAY(created_at) BETWEEN 15 AND 21 THEN 'Week 3'
+                    ELSE 'Week 4'
+                END as timeframe, 
+                SUM(total_price) as sales
+            FROM laundry_orders 
+            WHERE LOWER(order_status) IN ('completed', 'delivered', 'complete') 
+              AND MONTH(created_at) = MONTH(CURDATE()) 
+              AND YEAR(created_at) = YEAR(CURDATE())
+            GROUP BY timeframe
+        ");
+        $tempData = [];
+        while($row = $graphQ->fetch_assoc()) {
+            $tempData[$row['timeframe']] = floatval($row['sales']);
+        }
+        $weeks = ['Week 1', 'Week 2', 'Week 3', 'Week 4'];
+        foreach($weeks as $wk) {
+            $chartLabels[] = $wk;
+            $chartData[] = $tempData[$wk] ?? 0;
         }
     }
 
-    // Recent Orders List
-    $recentQuery = $conn->query("
+    // 6. Recent Orders
+    $recentQ = $conn->query("
         SELECT o.*, u.full_name, s.service_name 
-        FROM laundry_orders o
-        LEFT JOIN users u ON o.user_id = u.user_id
-        LEFT JOIN services s ON o.service_id = s.service_id
-        ORDER BY o.created_at DESC
+        FROM laundry_orders o 
+        JOIN users u ON o.user_id = u.user_id 
+        JOIN services s ON o.service_id = s.service_id 
+        ORDER BY o.created_at DESC 
         LIMIT 5
     ");
-    if ($recentQuery) {
-        $recentOrders = $recentQuery->fetch_all(MYSQLI_ASSOC);
+    if ($recentQ) {
+        $recentOrders = $recentQ->fetch_all(MYSQLI_ASSOC);
     }
 
 } catch (Exception $e) {
@@ -161,20 +149,10 @@ try {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Admin Dashboard | SmartSpin Admin</title>
-    
     <link rel="stylesheet" href="../assets/css/bootstrap.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.2/font/bootstrap-icons.min.css">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="../assets/css/admin.css">
-    <style>
-        .status-badge { padding: 5px 10px; border-radius: 50px; font-weight: 600; font-size: 0.75rem; display: inline-block; }
-        .status-Pending { background-color: #fff3cd; color: #856404; }
-        .status-Confirmed, .status-Washing, .status-Drying, .status-Folding, .status-ReadyforPickup { background-color: #cce5ff; color: #004085; }
-        .status-Completed { background-color: #d4edda; color: #155724; }
-        .status-Cancelled { background-color: #f8d7da; color: #721c24; }
-    </style>
 </head>
 <body>
 
@@ -224,7 +202,7 @@ try {
         <!-- Main Content Area -->
         <main class="main-content">
             
-            <!-- Page Header with Sales Filter Dropdown -->
+            <!-- Header with Filter -->
             <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4 gap-3">
                 <div>
                     <h3 class="fw-bold text-dark mb-1">Admin Dashboard</h3>
@@ -241,83 +219,81 @@ try {
                 </form>
             </div>
 
-            <!-- Metric Cards -->
+            <!-- Summary Metric Cards -->
             <div class="row g-4 mb-4">
                 <div class="col-12 col-sm-6 col-xl-3">
                     <div class="card h-100 mb-0">
-                        <span class="text-muted text-uppercase fw-bold small" style="font-size: 0.75rem;">
-                            <?= ucfirst($filter) ?> Revenue
-                        </span>
-                        <h3 class="fw-bold text-success mt-2 mb-0">₱<?= number_format($filteredRevenue, 2) ?></h3>
+                        <span class="text-muted text-uppercase fw-bold small" style="font-size: 0.75rem;"><?= ucfirst($filter) ?> Revenue</span>
+                        <h3 class="fw-bold text-success mt-2 mb-0">₱<?= number_format($totalRevenue, 2) ?></h3>
                     </div>
                 </div>
                 <div class="col-12 col-sm-6 col-xl-3">
                     <div class="card h-100 mb-0">
                         <span class="text-muted text-uppercase fw-bold small" style="font-size: 0.75rem;">Total Orders</span>
-                        <h3 class="fw-bold text-primary mt-2 mb-0"><?= number_format($totalOrders) ?></h3>
+                        <h3 class="fw-bold text-primary mt-2 mb-0"><?= number_format($totalOrdersCount) ?></h3>
                     </div>
                 </div>
                 <div class="col-12 col-sm-6 col-xl-3">
                     <div class="card h-100 mb-0">
                         <span class="text-muted text-uppercase fw-bold small" style="font-size: 0.75rem;">Pending Orders</span>
-                        <h3 class="fw-bold text-warning mt-2 mb-0"><?= number_format($pendingOrders) ?></h3>
+                        <h3 class="fw-bold text-warning mt-2 mb-0"><?= number_format($pendingOrdersCount) ?></h3>
                     </div>
                 </div>
                 <div class="col-12 col-sm-6 col-xl-3">
                     <div class="card h-100 mb-0">
                         <span class="text-muted text-uppercase fw-bold small" style="font-size: 0.75rem;">Registered Customers</span>
-                        <h3 class="fw-bold text-dark mt-2 mb-0"><?= number_format($activeCustomers) ?></h3>
+                        <h3 class="fw-bold text-dark mt-2 mb-0"><?= number_format($registeredCustomersCount) ?></h3>
                     </div>
                 </div>
             </div>
 
-            <!-- Smooth Curved Line Graph Section -->
-            <div class="row g-4 mb-4">
-                <div class="col-12">
-                    <div class="card mb-0">
-                        <div class="d-flex justify-content-between align-items-center mb-3">
-                            <h5 class="fw-bold text-dark mb-0"><?= ucfirst($filter) ?> Sales Overview</h5>
-                            <span class="badge bg-light text-secondary border"><?= strtoupper($filter) ?> REPORT</span>
-                        </div>
-                        <div style="position: relative; height: 300px; width: 100%;">
-                            <canvas id="salesChart"></canvas>
-                        </div>
-                    </div>
+            <!-- Sales Overview Chart Card -->
+            <div class="card mb-4">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="fw-bold text-dark mb-0">Sales Overview</h5>
+                    <span class="badge bg-light text-secondary border"><?= strtoupper($filter) ?> REPORT</span>
+                </div>
+                <div style="position: relative; height: 260px; width: 100%;">
+                    <canvas id="salesOverviewChart"></canvas>
                 </div>
             </div>
 
-            <!-- Recent Orders Table Section -->
+            <!-- Recent Laundry Orders Table -->
             <div class="card p-0 overflow-hidden">
                 <div class="p-4 border-bottom d-flex justify-content-between align-items-center">
                     <h5 class="fw-bold text-dark mb-0">Recent Laundry Orders</h5>
-                    <a href="orders.php" class="btn btn-sm btn-outline-primary rounded-pill px-3 shadow-none fw-semibold">View All</a>
+                    <a href="orders.php" class="btn btn-outline-primary btn-sm rounded-pill px-3 fw-semibold">View All</a>
                 </div>
                 <div class="table-container">
-                    <table class="table mb-0">
+                    <table class="table mb-0 align-middle">
                         <thead>
                             <tr>
-                                <th scope="col">Tracking No</th>
+                                <th scope="col" class="ps-4">Tracking No</th>
                                 <th scope="col">Customer</th>
                                 <th scope="col">Service</th>
                                 <th scope="col">Total</th>
                                 <th scope="col">Status</th>
+                                <th scope="col" class="text-end pe-4">Date</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <?php if(empty($recentOrders)): ?>
+                            <?php if (empty($recentOrders)): ?>
                                 <tr>
-                                    <td colspan="5" class="text-center py-4 text-muted">No recent orders found.</td>
+                                    <td colspan="6" class="text-center py-4 text-muted">No recent orders found.</td>
                                 </tr>
                             <?php else: ?>
-                                <?php foreach($recentOrders as $order): 
-                                    $statusClass = 'status-' . str_replace(' ', '', $order['order_status']);
-                                ?>
+                                <?php foreach($recentOrders as $ord): ?>
                                 <tr>
-                                    <td><strong class="text-primary"><?= htmlspecialchars($order['tracking_no']) ?></strong></td>
-                                    <td><?= htmlspecialchars($order['full_name'] ?? 'Walk-in') ?></td>
-                                    <td><?= htmlspecialchars($order['service_name'] ?? 'General') ?></td>
-                                    <td class="fw-bold">₱<?= number_format($order['total_price'], 2) ?></td>
-                                    <td><span class="status-badge <?= $statusClass ?>"><?= $order['order_status'] ?></span></td>
+                                    <td class="ps-4 fw-bold text-primary">#<?= htmlspecialchars($ord['tracking_no']) ?></td>
+                                    <td><strong class="text-dark"><?= htmlspecialchars($ord['full_name']) ?></strong></td>
+                                    <td><?= htmlspecialchars($ord['service_name']) ?></td>
+                                    <td class="fw-bold text-dark">₱<?= number_format($ord['total_price'], 2) ?></td>
+                                    <td>
+                                        <span class="badge bg-light text-dark border px-2 py-1">
+                                            <?= htmlspecialchars($ord['order_status']) ?>
+                                        </span>
+                                    </td>
+                                    <td class="text-end pe-4 text-muted small"><?= date('M d, Y', strtotime($ord['created_at'])) ?></td>
                                 </tr>
                                 <?php endforeach; ?>
                             <?php endif; ?>
@@ -329,12 +305,12 @@ try {
         </main>
     </div>
 
-    <!-- Chart.js CDN -->
+    <!-- Chart.js & Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         document.addEventListener("DOMContentLoaded", function() {
-            // Sidebar toggle for mobile
+            // Mobile Sidebar Toggle
             const sidebarToggle = document.getElementById('sidebarToggle');
             const sidebarNav = document.getElementById('sidebarNav');
             
@@ -344,27 +320,20 @@ try {
                 });
             }
 
-            // Render Smooth Curved Line Chart
-            const ctx = document.getElementById('salesChart').getContext('2d');
-            const gradient = ctx.createLinearGradient(0, 0, 0, 300);
-            gradient.addColorStop(0, 'rgba(30, 79, 143, 0.35)');
-            gradient.addColorStop(1, 'rgba(30, 79, 143, 0.00)');
-
-            const salesChart = new Chart(ctx, {
+            // Render Sales Chart
+            const ctx = document.getElementById('salesOverviewChart').getContext('2d');
+            new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: <?= json_encode($chartLabels) ?>,
                     datasets: [{
                         label: 'Sales (₱)',
                         data: <?= json_encode($chartData) ?>,
-                        backgroundColor: gradient,
                         borderColor: '#1e4f8f',
-                        borderWidth: 3,
-                        tension: 0.4,
+                        backgroundColor: 'rgba(30, 79, 143, 0.08)',
+                        borderWidth: 2,
                         fill: true,
-                        pointBackgroundColor: '#1e4f8f',
-                        pointRadius: 4,
-                        pointHoverRadius: 6
+                        tension: 0.3
                     }]
                 },
                 options: {
@@ -379,7 +348,6 @@ try {
                             grid: { color: '#f0f4fd' },
                             ticks: { 
                                 font: { family: 'Inter' },
-                                precision: 0,
                                 callback: function(value) {
                                     return '₱' + value;
                                 }
@@ -393,6 +361,11 @@ try {
                 }
             });
         });
+
+        // Auto-refresh dashboard every 5 seconds to sync with customer bookings automatically
+        setInterval(function() {
+            location.reload();
+        }, 5000);
     </script>
 </body>
 </html>

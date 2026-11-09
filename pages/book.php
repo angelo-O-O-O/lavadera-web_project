@@ -15,7 +15,7 @@ $errorMsg = "";
 
 $selectedServiceId = $_GET['service_id'] ?? '';
 
-// Kunin ang lahat ng active services na ginawa ng admin mula sa database
+// Kunin ang lahat ng active services na galing sa admin
 $services = [];
 $servQuery = $conn->query("SELECT * FROM services WHERE status = 'active'");
 if ($servQuery) {
@@ -30,11 +30,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $pickupDateOnly = trim($_POST['pickup_date'] ?? '');
     $pickupTimeOnly = trim($_POST['pickup_time'] ?? '');
 
-    // Pagsamahin ang date at time para maging datetime format para sa database
     $pickupDate = $pickupDateOnly . ' ' . $pickupTimeOnly . ':00';
 
     if ($serviceId > 0 && $weight > 0 && !empty($pickupDateOnly) && !empty($pickupTimeOnly)) {
-        // Kunin ang price ng napiling service mula sa admin database
         $priceStmt = $conn->prepare("SELECT price FROM services WHERE service_id = ? AND status = 'active'");
         $priceStmt->bind_param("i", $serviceId);
         $priceStmt->execute();
@@ -42,7 +40,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($serviceData) {
             $pricePerKg = $serviceData['price'];
-            $totalPrice = $pricePerKg * $weight; // Auto calculate batay sa timbang at presyo ng admin
+            $totalPrice = $pricePerKg * $weight;
             
             $trackingNo = 'LAV-' . strtoupper(substr(uniqid(), -6));
             $status = 'Pending';
@@ -81,11 +79,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .nav-link { color: #475569; font-weight: 500; text-decoration: none; padding: 6px 12px; border-radius: 6px; }
         .nav-link:hover, .nav-link.active { color: #1e4f8f; background: #f1f5f9; font-weight: 600; }
         .content-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); padding: 32px; }
+        
+        /* I-hide ang default time dashes bago mag-focus o mamili ang user para mas malinis tingnan */
+        input[type="time"]::-webkit-datetime-edit-fields-wrapper {
+            display: flex;
+        }
     </style>
 </head>
 <body>
 
-    <!-- Top Navbar -->
     <header class="navbar-custom d-flex justify-content-between align-items-center">
         <div class="d-flex align-items-center gap-2">
             <div class="bg-primary text-white fw-bold rounded d-flex align-items-center justify-content-center" style="width: 36px; height: 36px;">L</div>
@@ -130,7 +132,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <select class="form-select shadow-none" id="service_id" name="service_id" required onchange="calculateTotal()">
                         <option value="" disabled selected data-price="0">Choose a service...</option>
                         <?php foreach ($services as $serv): ?>
-                            <!-- Lumalabas na rito ang eksaktong mga serbisyo at presyo na naka-set sa admin side -->
                             <option value="<?= $serv['service_id'] ?>" data-price="<?= $serv['price'] ?>" <?= ($selectedServiceId == $serv['service_id']) ? 'selected' : '' ?>>
                                 <?= htmlspecialchars($serv['service_name']) ?> (₱<?= number_format($serv['price'], 2) ?> / kg)
                             </option>
@@ -144,13 +145,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <small class="text-muted" style="font-size: 0.75rem;">Minimum of 1 kg.</small>
                 </div>
 
-                <!-- Estimated Total Amount (Dark Text & Compact Size) -->
                 <div class="mb-3 p-3 bg-light rounded-3 border d-flex justify-content-between align-items-center">
                     <span class="fw-semibold text-muted small">Estimated Total Amount:</span>
                     <span class="fw-bold fs-6 text-dark" id="displayTotal">₱0.00</span>
                 </div>
 
-                <!-- Malinis na Date at Time inputs -->
                 <div class="row">
                     <div class="col-md-6 mb-3">
                         <label for="pickup_date" class="form-label fw-semibold small text-muted">Preferred Pickup Date</label>
@@ -158,7 +157,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </div>
                     <div class="col-md-6 mb-3">
                         <label for="pickup_time" class="form-label fw-semibold small text-muted">Preferred Pickup Time</label>
-                        <input type="time" class="form-control shadow-none" id="pickup_time" name="pickup_time" required>
+                        <!-- Ginagamit ang text type muna para malinis ang placeholder, tapos magiging time picker kapag clinick -->
+                        <input type="text" class="form-control shadow-none" id="pickup_time" name="pickup_time" placeholder="Select time" onfocus="this.type='time'" onblur="if(!this.value)this.type='text'" required>
                     </div>
                 </div>
 

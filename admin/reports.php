@@ -37,17 +37,17 @@ $tableSales = [];
 
 try {
     // 1. Summary Counts
-    $revQ = $conn->query("SELECT SUM(total_price) AS total FROM laundry_orders WHERE order_status = 'Completed' $dateCondition");
+    $revQ = $conn->query("SELECT SUM(total_price) AS total FROM laundry_orders WHERE LOWER(order_status) IN ('completed', 'delivered', 'complete') $dateCondition");
     if ($revQ) {
         $totalRevenue = $revQ->fetch_assoc()['total'] ?? 0.00;
     }
 
-    $compQ = $conn->query("SELECT COUNT(*) AS total FROM laundry_orders WHERE order_status = 'Completed' $dateCondition");
+    $compQ = $conn->query("SELECT COUNT(*) AS total FROM laundry_orders WHERE LOWER(order_status) IN ('completed', 'delivered', 'complete') $dateCondition");
     if ($compQ) {
         $completedOrdersCount = $compQ->fetch_assoc()['total'] ?? 0;
     }
 
-    $cancQ = $conn->query("SELECT COUNT(*) AS total FROM laundry_orders WHERE order_status = 'Cancelled' $dateCondition");
+    $cancQ = $conn->query("SELECT COUNT(*) AS total FROM laundry_orders WHERE LOWER(order_status) IN ('cancelled', 'declined') $dateCondition");
     if ($cancQ) {
         $cancelledOrdersCount = $cancQ->fetch_assoc()['total'] ?? 0;
     }
@@ -57,8 +57,8 @@ try {
         SELECT s.service_name, COUNT(o.order_id) as bookings, SUM(o.total_price) as revenue
         FROM laundry_orders o
         JOIN services s ON o.service_id = s.service_id
-        WHERE o.order_status = 'Completed' $dateCondition
-        GROUP BY s.service_id
+        WHERE LOWER(o.order_status) IN ('completed', 'delivered', 'complete') $dateCondition
+        GROUP BY s.service_id, s.service_name
         ORDER BY bookings DESC
         LIMIT 5
     ");
@@ -68,41 +68,28 @@ try {
 
     // 3. Dynamic Chart & Table Data based on filter
     if ($filter === 'daily') {
-        $graphQ = $conn->query("
-            SELECT HOUR(created_at) as timeframe, COUNT(*) as orders_count, SUM(total_price) as sales
-            FROM laundry_orders 
-            WHERE order_status = 'Completed' AND DATE(created_at) = CURDATE()
-            GROUP BY HOUR(created_at)
-            ORDER BY timeframe ASC
-        ");
-        $tempData = [];
-        while($row = $graphQ->fetch_assoc()) {
-            $label = date("g A", strtotime(sprintf("%02d:00:00", $row['timeframe'])));
-            $tempData[$label] = $row;
-        }
-        for($i = 8; $i <= 20; $i++) {
-            $label = date("g A", strtotime("$i:00"));
-            $chartLabels[] = $label;
-            $chartData[] = floatval($tempData[$label]['sales'] ?? 0);
-            $tableSales[] = [
-                'period' => $label,
-                'orders' => $tempData[$label]['orders_count'] ?? 0,
-                'sales' => $tempData[$label]['sales'] ?? 0.00
-            ];
-        }
+        $chartLabels = ['Today'];
+        $chartData = [floatval($totalRevenue)];
+        $tableSales = [
+            [
+                'period' => date('M d, Y'),
+                'orders' => $completedOrdersCount,
+                'sales' => $totalRevenue
+            ]
+        ];
     } elseif ($filter === 'weekly') {
         $graphQ = $conn->query("
             SELECT DAYNAME(created_at) as timeframe, COUNT(*) as orders_count, SUM(total_price) as sales
             FROM laundry_orders 
-            WHERE order_status = 'Completed' AND YEARWEEK(created_at, 1) = YEARWEEK(CURDATE(), 1)
+            WHERE LOWER(order_status) IN ('completed', 'delivered', 'complete') AND YEARWEEK(created_at, 1) = YEARWEEK(CURDATE(), 1)
             GROUP BY DATE(created_at), DAYNAME(created_at)
             ORDER BY created_at ASC
         ");
-        $days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
         $tempData = [];
         while($row = $graphQ->fetch_assoc()) {
             $tempData[$row['timeframe']] = $row;
         }
+        $days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
         foreach($days as $day) {
             $chartLabels[] = $day;
             $chartData[] = floatval($tempData[$day]['sales'] ?? 0);
@@ -116,7 +103,7 @@ try {
         $graphQ = $conn->query("
             SELECT MONTHNAME(created_at) as timeframe, COUNT(*) as orders_count, SUM(total_price) as sales
             FROM laundry_orders 
-            WHERE order_status = 'Completed' AND YEAR(created_at) = YEAR(CURDATE())
+            WHERE LOWER(order_status) IN ('completed', 'delivered', 'complete') AND YEAR(created_at) = YEAR(CURDATE())
             GROUP BY MONTH(created_at), MONTHNAME(created_at)
             ORDER BY MONTH(created_at) ASC
         ");
@@ -135,13 +122,22 @@ try {
             ];
         }
     } else {
-        // Monthly Default
+        // Monthly
         $graphQ = $conn->query("
-            SELECT CONCAT('Week ', WEEK(created_at, 1) - WEEK(DATE_SUB(created_at, INTERVAL DAYOFMONTH(created_at)-1 DAY), 1) + 1) as timeframe, COUNT(*) as orders_count, SUM(total_price) as sales
+            SELECT 
+                CASE 
+                    WHEN DAY(created_at) BETWEEN 1 AND 7 THEN 'Week 1'
+                    WHEN DAY(created_at) BETWEEN 8 AND 14 THEN 'Week 2'
+                    WHEN DAY(created_at) BETWEEN 15 AND 21 THEN 'Week 3'
+                    ELSE 'Week 4'
+                END as timeframe, 
+                COUNT(*) as orders_count, 
+                SUM(total_price) as sales
             FROM laundry_orders 
-            WHERE order_status = 'Completed' AND MONTH(created_at) = MONTH(CURDATE()) AND YEAR(created_at) = YEAR(CURDATE())
+            WHERE LOWER(order_status) IN ('completed', 'delivered', 'complete') 
+              AND MONTH(created_at) = MONTH(CURDATE()) 
+              AND YEAR(created_at) = YEAR(CURDATE())
             GROUP BY timeframe
-            ORDER BY created_at ASC
         ");
         $tempData = [];
         while($row = $graphQ->fetch_assoc()) {
